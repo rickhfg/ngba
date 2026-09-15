@@ -1,0 +1,28 @@
+# Build outputs
+build/
+bin/
+*.exe
+*.a
+*.o
+*.obj
+*.lib
+*.dll
+
+# Temporary and benchmark files
+.tmp/
+*.ppm
+*.log
+README.dev.md
+
+# ROMs, BIOS, and save states
+*.gba
+*.bin
+*.ngbs
+*.sav
+
+# IDE and OS
+.vscode/
+.vs/
+.idea/
+Thumbs.db
+Desktop.ini
