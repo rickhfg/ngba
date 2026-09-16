@@ -249,6 +249,14 @@ void Runtime::LoadState(const std::string& path) {
     cpu_.swap(next_cpu);
     bus_.swap(next_bus);
     bus_->sram_dirty_ = true;
+    const bool sound_dma_active =
+        (bus_->dma_[1].active || bus_->dma_[2].active ||
+         ((bus_->dma_[1].control >> 12) & 3u) == 3u ||
+         ((bus_->dma_[2].control >> 12) & 3u) == 3u);
+    std::array<std::uint8_t, 1024> io_arr{};
+    std::copy_n(bus_->io_.data(), std::min<std::size_t>(bus_->io_.size(), 1024), io_arr.data());
+    bus_->GetApu().RestoreFromIo(io_arr, sound_dma_active);
+    bus_->GetApu().SetLastCycle(bus_->Cycles());
     bus_->GetApu().SetAudioSink(audio_sink_);
 }
 

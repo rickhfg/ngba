@@ -28,10 +28,8 @@ const auto kFrameTime = std::chrono::duration_cast<Clock::duration>(
 
 class WaveOutAudioSink : public ngba::AudioSink {
 public:
-    static constexpr std::size_t kBufferCount = 4;
-    static constexpr std::size_t kBufferFrames = 735;
-    static constexpr std::size_t kBufferSamples = kBufferFrames * 2;
-    static constexpr std::size_t kBufferBytes = kBufferSamples * sizeof(std::int16_t);
+    static constexpr std::size_t kBufferCount = 8;
+    static constexpr std::size_t kMaxSamples = 2048;
 
     WaveOutAudioSink() noexcept {
         Open();
@@ -57,40 +55,32 @@ public:
             if ((headers_[i].dwFlags & WHDR_PREPARED) != 0) {
                 waveOutUnprepareHeader(device_, &headers_[i], sizeof(WAVEHDR));
             }
-            headers_[i].dwFlags = WHDR_DONE;
+            headers_[i].dwFlags = 0;
         }
         ring_index_ = 0;
-        staging_.clear();
     }
 
     void SubmitSamples(const std::int16_t* stereo_samples, std::size_t frame_count) override {
         if (!device_ || muted_ || frame_count == 0 || !stereo_samples) return;
 
-        staging_.insert(staging_.end(), stereo_samples, stereo_samples + frame_count * 2);
-
-        if (staging_.size() > kBufferSamples * (kBufferCount + 2)) {
-            staging_.erase(staging_.begin(), staging_.end() - kBufferSamples * 2);
-        }
-
-        while (staging_.size() >= kBufferSamples) {
-            WAVEHDR& hdr = headers_[ring_index_];
-            if ((hdr.dwFlags & WHDR_PREPARED) != 0) {
-                if ((hdr.dwFlags & WHDR_DONE) == 0) {
-                    break;
-                }
-                waveOutUnprepareHeader(device_, &hdr, sizeof(WAVEHDR));
+        WAVEHDR& hdr = headers_[ring_index_];
+        if ((hdr.dwFlags & WHDR_PREPARED) != 0) {
+            while ((hdr.dwFlags & WHDR_DONE) == 0) {
+                Sleep(1);
             }
-
-            std::memcpy(buffers_[ring_index_].data(), staging_.data(), kBufferBytes);
-            staging_.erase(staging_.begin(), staging_.begin() + kBufferSamples);
-
-            hdr.dwBufferLength = static_cast<DWORD>(kBufferBytes);
-            hdr.dwFlags = 0;
-            waveOutPrepareHeader(device_, &hdr, sizeof(WAVEHDR));
-            waveOutWrite(device_, &hdr, sizeof(WAVEHDR));
-
-            ring_index_ = (ring_index_ + 1) % kBufferCount;
+            waveOutUnprepareHeader(device_, &hdr, sizeof(WAVEHDR));
         }
+
+        const std::size_t sample_count = std::min(frame_count * 2, kMaxSamples);
+        const std::size_t byte_count = sample_count * sizeof(std::int16_t);
+        std::memcpy(buffers_[ring_index_].data(), stereo_samples, byte_count);
+
+        hdr.dwBufferLength = static_cast<DWORD>(byte_count);
+        hdr.dwFlags = 0;
+        waveOutPrepareHeader(device_, &hdr, sizeof(WAVEHDR));
+        waveOutWrite(device_, &hdr, sizeof(WAVEHDR));
+
+        ring_index_ = (ring_index_ + 1) % kBufferCount;
     }
 
 private:
@@ -110,11 +100,9 @@ private:
         }
 
         for (std::size_t i = 0; i < kBufferCount; ++i) {
-            buffers_[i].resize(kBufferSamples, 0);
+            buffers_[i].assign(kMaxSamples, 0);
             headers_[i] = WAVEHDR{};
             headers_[i].lpData = reinterpret_cast<LPSTR>(buffers_[i].data());
-            headers_[i].dwBufferLength = static_cast<DWORD>(kBufferBytes);
-            headers_[i].dwFlags = WHDR_DONE;
         }
     }
 
@@ -136,7 +124,6 @@ private:
     std::size_t ring_index_{0};
     std::array<std::vector<std::int16_t>, kBufferCount> buffers_{};
     std::array<WAVEHDR, kBufferCount> headers_{};
-    std::vector<std::int16_t> staging_{};
 };
 
 std::wstring DirectoryOf(const std::wstring& path) {

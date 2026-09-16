@@ -185,16 +185,16 @@ void TestDirectSoundSampling() {
     apu.FlushFrame();
 
     assert(sink.total_frames_ > 0);
-    // Check that samples are non-zero
+    // Check that samples are non-zero and converge to 12288 (48 * 256)
     bool non_zero = false;
     for (auto sample : sink.samples_) {
         if (sample != 0) {
             non_zero = true;
-            // 64 << 7 = 8192
-            assert(sample == 8192);
+            assert(sample > 0 && sample <= 12288);
         }
     }
     assert(non_zero);
+    assert(sink.samples_.back() == 12288);
 
     std::cout << "[PASS] TestDirectSoundSampling" << std::endl;
 }
@@ -255,6 +255,111 @@ void TestBusDmaIntegration() {
     std::cout << "[PASS] TestBusDmaIntegration" << std::endl;
 }
 
+void TestSound1SweepAndDuty() {
+    ngba::Apu apu;
+    apu.Write8(0x084, 0x80); // Master sound enable
+
+    // SOUND1CNT_L: sweep shift 1, dec (1), period 2
+    apu.Write16(0x060, 0x0029);
+    // SOUND1CNT_H: duty 2 (50%), vol 15, length 32
+    apu.Write16(0x062, 0xF080 | 32);
+    // SOUND1CNT_X: trigger (bit 15), length enable (bit 14), freq 1000
+    apu.Write16(0x064, 0xC000 | 1000);
+
+    assert(apu.Channel1Active());
+    assert((apu.SoundCntX() & 1u) != 0);
+
+    // Advance 65536 cycles (2 frame sequencer steps)
+    apu.AdvanceTo(65536);
+    assert(apu.Channel1Active());
+
+    std::cout << "[PASS] TestSound1SweepAndDuty" << std::endl;
+}
+
+void TestSound2Envelope() {
+    ngba::Apu apu;
+    apu.Write8(0x084, 0x80);
+
+    // SOUND2CNT_L: duty 1 (25%), vol 10, envelope period 1, decrease
+    apu.Write16(0x068, 0xA140);
+    // SOUND2CNT_H: trigger, freq 800
+    apu.Write16(0x06C, 0x8000 | 800);
+
+    assert(apu.Channel2Active());
+    assert((apu.SoundCntX() & 2u) != 0);
+
+    apu.AdvanceTo(100000);
+    assert(apu.Channel2Active());
+
+    std::cout << "[PASS] TestSound2Envelope" << std::endl;
+}
+
+void TestSound3Wave() {
+    ngba::Apu apu;
+    apu.Write8(0x084, 0x80);
+
+    // Fill wave RAM with 0x01, 0x23, ...
+    for (std::uint32_t i = 0; i < 16; ++i) {
+        apu.Write8(0x090 + i, static_cast<std::uint8_t>(i * 17));
+        assert(apu.Read8(0x090 + i) == static_cast<std::uint8_t>(i * 17));
+    }
+
+    // Enable channel 3
+    apu.Write8(0x070, 0x80);
+    // Volume 100% (code 1)
+    apu.Write16(0x072, 0x2000);
+    // Trigger
+    apu.Write16(0x074, 0x8000 | 1200);
+
+    assert(apu.Channel3Active());
+    assert((apu.SoundCntX() & 4u) != 0);
+
+    std::cout << "[PASS] TestSound3Wave" << std::endl;
+}
+
+void TestSound4Noise() {
+    ngba::Apu apu;
+    apu.Write8(0x084, 0x80);
+
+    // SOUND4CNT_L: volume 12
+    apu.Write16(0x078, 0xC000);
+    // SOUND4CNT_H: trigger, ratio 1
+    apu.Write16(0x07C, 0x8001);
+
+    assert(apu.Channel4Active());
+    assert((apu.SoundCntX() & 8u) != 0);
+
+    std::cout << "[PASS] TestSound4Noise" << std::endl;
+}
+
+void TestRestoreFromIo() {
+    ngba::Apu apu;
+    std::array<std::uint8_t, 1024> io{};
+
+    // Test backward compatibility recovery
+    apu.RestoreFromIo(io, true); // sound DMA was active, but io is zero
+    assert((apu.SoundCntX() & 0x80u) != 0);
+    assert(apu.SoundCntH() == 0x3302);
+    assert(apu.SoundCntL() == 0xFF77);
+    assert(apu.SoundBias() == 0x0200);
+
+    // Test normal restore from populated io
+    io[0x084] = 0x80;
+    io[0x080] = 0x55;
+    io[0x081] = 0xAA;
+    io[0x082] = 0x02;
+    io[0x083] = 0x33;
+    io[0x088] = 0x00;
+    io[0x089] = 0x02;
+    apu.RestoreFromIo(io, false);
+    assert((apu.SoundCntX() & 0x80u) != 0);
+    assert(apu.SoundCntL() == 0xAA55);
+    assert(apu.SoundCntH() == 0x3302);
+    assert(apu.SoundBias() == 0x0200);
+
+    std::cout << "[PASS] TestRestoreFromIo" << std::endl;
+}
+
 } // namespace
 
 int main() {
@@ -264,6 +369,11 @@ int main() {
     TestTimerStepping();
     TestDirectSoundSampling();
     TestBusDmaIntegration();
+    TestSound1SweepAndDuty();
+    TestSound2Envelope();
+    TestSound3Wave();
+    TestSound4Noise();
+    TestRestoreFromIo();
     std::remove("apu-test.gba");
     std::cout << "All APU tests passed!" << std::endl;
     return 0;

@@ -12,6 +12,7 @@ bin/
 .tmp/
 *.ppm
 *.log
+*.wav
 README.dev.md
 
 # ROMs, BIOS, and save states

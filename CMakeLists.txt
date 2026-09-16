@@ -85,7 +85,6 @@ if (MINGW)
     target_link_options(profile_bench PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
-
 if (BUILD_TESTING)
     if (WIN32)
         add_executable(ngba_windows_tests tests/windows_tests.cpp)

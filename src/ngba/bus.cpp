@@ -226,7 +226,13 @@ void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
         }
     }
     if (region == 0x04 && address >= 0x04000060u && address <= 0x040000A8u) {
+        apu_.AdvanceTo(cycles_);
         apu_.Write16(address - kIoBase, value);
+        const std::size_t offset = address - kIoBase;
+        if (offset + 1 < io_.size()) {
+            io_[offset] = static_cast<std::uint8_t>(value);
+            io_[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+        }
         return;
     }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
@@ -255,7 +261,15 @@ void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
 void MemoryBus::Write32(std::uint32_t address, std::uint32_t value) {
     const unsigned region = address >> 24;
     if (region == 0x04 && address >= 0x04000060u && address <= 0x040000A8u) {
+        apu_.AdvanceTo(cycles_);
         apu_.Write32(address - kIoBase, value);
+        const std::size_t offset = address - kIoBase;
+        if (offset + 3 < io_.size()) {
+            io_[offset] = static_cast<std::uint8_t>(value);
+            io_[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+            io_[offset + 2] = static_cast<std::uint8_t>(value >> 16);
+            io_[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+        }
         return;
     }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
@@ -501,6 +515,7 @@ void MemoryBus::AdvanceTo(Cycle target_cycle) {
         const Cycle delta = target_cycle - cycles_;
         scanline_cycles_ += static_cast<std::uint32_t>(delta);
         cycles_ = target_cycle;
+        apu_.AdvanceTo(cycles_);
         return;
     }
 
@@ -515,6 +530,7 @@ void MemoryBus::AdvanceTo(Cycle target_cycle) {
                 const Cycle delta = target_cycle - cycles_;
                 scanline_cycles_ += static_cast<std::uint32_t>(delta);
                 cycles_ = target_cycle;
+                apu_.AdvanceTo(cycles_);
             }
             break;
         }
@@ -523,6 +539,7 @@ void MemoryBus::AdvanceTo(Cycle target_cycle) {
             const Cycle delta = event_cycle - cycles_;
             scanline_cycles_ += static_cast<std::uint32_t>(delta);
             cycles_ = event_cycle;
+            apu_.AdvanceTo(cycles_);
         }
 
         if (ppu_event == cycles_) {
@@ -903,7 +920,9 @@ void MemoryBus::WriteMapped8(std::uint32_t address, std::uint8_t value) {
         const std::size_t offset = address - kIoBase;
         if (offset < io_.size()) {
             if (offset >= 0x060u && offset <= 0x0A8u) {
+                apu_.AdvanceTo(cycles_);
                 apu_.Write8(static_cast<std::uint32_t>(offset), value);
+                io_[offset] = value;
                 return;
             }
             if (offset == 0x006u || offset == 0x007u) return;
@@ -1089,7 +1108,11 @@ void MemoryBus::WriteTimerData(unsigned timer_index,
     const std::size_t base = kTimer0Offset + timer_index * kTimerStride;
     io_[base + register_offset] = value;
     Timer& timer = timers_[timer_index];
-    timer.reload = LoadLe16(io_[base], io_[base + 1u]);
+    if (register_offset == 0u) {
+        timer.reload = static_cast<std::uint16_t>((timer.reload & 0xFF00u) | value);
+    } else {
+        timer.reload = static_cast<std::uint16_t>((timer.reload & 0x00FFu) | (static_cast<std::uint16_t>(value) << 8));
+    }
     if (!timer.enabled) {
         timer.counter = timer.reload;
         timer.last_cycle = cycles_;
@@ -1457,7 +1480,6 @@ void MemoryBus::ProcessDmaEvent() {
 
     const std::size_t base = kDma0Offset + channel * kDmaStride;
     for (unsigned i = 0; i < 4; ++i) {
-        io_[base + i] = static_cast<std::uint8_t>(transfer.source >> (i * 8));
         io_[base + 4 + i] = static_cast<std::uint8_t>(
             transfer.destination >> (i * 8));
     }
