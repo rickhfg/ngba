@@ -23,6 +23,7 @@ add_library(ngba_core STATIC
     src/ngba/runtime.cpp
     src/ngba/file_io.cpp
     src/ngba/rtc.cpp
+    src/ngba/eeprom.cpp
 )
 
 target_include_directories(ngba_core
@@ -142,6 +143,8 @@ if (BUILD_TESTING)
     if (MINGW)
         target_link_options(ngba_ppu_tests PRIVATE -static-libgcc -static-libstdc++)
     endif()
+    add_test(NAME ngba_ppu_tests COMMAND ngba_ppu_tests)
+
     add_executable(ngba_rtc_tests
         tests/rtc_tests.cpp
     )
@@ -151,7 +154,16 @@ if (BUILD_TESTING)
     endif()
     add_test(NAME ngba_rtc_tests COMMAND ngba_rtc_tests)
 
-    foreach(test_target ngba_rom_tests ngba_arm7_tests ngba_ppu_tests ngba_runtime_tests ngba_bios_tests ngba_file_io_tests ngba_rtc_tests)
+    add_executable(ngba_eeprom_tests
+        tests/eeprom_tests.cpp
+    )
+    target_link_libraries(ngba_eeprom_tests PRIVATE ngba_core)
+    if (MINGW)
+        target_link_options(ngba_eeprom_tests PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ngba_eeprom_tests COMMAND ngba_eeprom_tests)
+
+    foreach(test_target ngba_rom_tests ngba_arm7_tests ngba_ppu_tests ngba_runtime_tests ngba_bios_tests ngba_file_io_tests ngba_rtc_tests ngba_eeprom_tests)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()
