@@ -225,6 +225,10 @@ void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
             if (address == 0x080000C8u) { rtc_.WriteControl(value); return; }
         }
     }
+    if (region == 0x04 && address >= 0x04000060u && address <= 0x040000A8u) {
+        apu_.Write16(address - kIoBase, value);
+        return;
+    }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
         const std::size_t offset = static_cast<std::size_t>(address - kIwramBase) % iwram_.size();
         if (offset + 1 < iwram_.size()) {
@@ -250,6 +254,10 @@ void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
 
 void MemoryBus::Write32(std::uint32_t address, std::uint32_t value) {
     const unsigned region = address >> 24;
+    if (region == 0x04 && address >= 0x04000060u && address <= 0x040000A8u) {
+        apu_.Write32(address - kIoBase, value);
+        return;
+    }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
         const std::size_t offset = static_cast<std::size_t>(address - kIwramBase) % iwram_.size();
         if (offset + 3 < iwram_.size()) {
@@ -538,6 +546,7 @@ void MemoryBus::AdvanceTo(Cycle target_cycle) {
                     ++frames_;
                     if ((dispstat & 0x0008u) != 0) RequestInterrupt(0x0001u);
                     TriggerDma(1u);
+                    apu_.FlushFrame();
                 }
                 if (vcount_ == static_cast<std::uint16_t>(dispstat >> 8) &&
                     (dispstat & 0x0020u) != 0) {
@@ -554,6 +563,7 @@ void MemoryBus::AdvanceTo(Cycle target_cycle) {
         if (dma_event == cycles_) ProcessDmaEvent();
     }
 
+    apu_.AdvanceTo(cycles_);
     RecalculateNextEvent();
 }
 
@@ -803,6 +813,9 @@ std::uint8_t MemoryBus::ReadMapped8(std::uint32_t address) const {
     case 0x04: {
         const std::size_t offset = address - kIoBase;
         if (offset < io_.size()) {
+            if (offset >= 0x060u && offset <= 0x0A8u) {
+                return apu_.Read8(static_cast<std::uint32_t>(offset));
+            }
             if (offset >= 0x100u && offset < 0x110u) {
                 const_cast<MemoryBus*>(this)->SynchronizeTimersTo(cycles_);
             } else if (offset == 0x004u || offset == 0x005u) {
@@ -889,6 +902,10 @@ void MemoryBus::WriteMapped8(std::uint32_t address, std::uint8_t value) {
     case 0x04: {
         const std::size_t offset = address - kIoBase;
         if (offset < io_.size()) {
+            if (offset >= 0x060u && offset <= 0x0A8u) {
+                apu_.Write8(static_cast<std::uint32_t>(offset), value);
+                return;
+            }
             if (offset == 0x006u || offset == 0x007u) return;
             if (offset == 0x004u) {
                 io_[offset] = static_cast<std::uint8_t>((io_[offset] & 0x07u) | (value & 0xF8u));
@@ -1197,6 +1214,9 @@ void MemoryBus::ProcessTimerOverflow(unsigned timer_index) {
     }
     ScheduleTimerOverflow(timer_index);
     IncrementCascadedTimer(timer_index + 1u);
+    const unsigned dma_mask = apu_.StepTimer(timer_index);
+    if ((dma_mask & 1u) != 0) TriggerSoundDma(1u);
+    if ((dma_mask & 2u) != 0) TriggerSoundDma(2u);
 }
 
 void MemoryBus::IncrementCascadedTimer(unsigned timer_index) {
@@ -1222,6 +1242,9 @@ void MemoryBus::IncrementCascadedTimer(unsigned timer_index) {
         RequestInterrupt(static_cast<std::uint16_t>(1u << (3u + timer_index)));
     }
     IncrementCascadedTimer(timer_index + 1u);
+    const unsigned dma_mask = apu_.StepTimer(timer_index);
+    if ((dma_mask & 1u) != 0) TriggerSoundDma(1u);
+    if ((dma_mask & 2u) != 0) TriggerSoundDma(2u);
 }
 
 void MemoryBus::UpdateDisplayStatus() {
@@ -1345,8 +1368,8 @@ void MemoryBus::StartDma(unsigned channel) {
     DmaTransfer& transfer = dma_[channel];
     transfer = DmaTransfer{};
     // Immediate starts on the next bus slot; HBlank/VBlank stay armed until
-    // the corresponding PPU edge. FIFO timing remains intentionally absent.
-    transfer.armed = timing <= 2u;
+    // the corresponding PPU edge; timing 3 on channels 1 & 2 is Sound FIFO.
+    transfer.armed = (timing <= 2u) || ((channel == 1 || channel == 2) && timing == 3u);
     transfer.active = timing == 0u;
     transfer.initial_source = source;
     transfer.initial_destination = destination;
@@ -1380,6 +1403,22 @@ void MemoryBus::TriggerDma(unsigned timing) {
         transfer.active = true;
         transfer.next_cycle = cycles_ + 1u;
     }
+    RecalculateNextEvent();
+}
+
+void MemoryBus::TriggerSoundDma(unsigned channel) {
+    if (channel != 1 && channel != 2) return;
+    DmaTransfer& transfer = dma_[channel];
+    if (!transfer.armed || transfer.active) return;
+    const unsigned timing = (transfer.control >> 12) & 0x03u;
+    if (timing != 3u) return;
+
+    transfer.remaining = 4u;
+    transfer.word = true;
+    transfer.destination = channel == 1 ? 0x040000A0u : 0x040000A4u;
+    transfer.destination_control = 2u;
+    transfer.active = true;
+    transfer.next_cycle = cycles_ + 1u;
     RecalculateNextEvent();
 }
 
@@ -1429,10 +1468,14 @@ void MemoryBus::ProcessDmaEvent() {
         const bool repeating = (transfer.control & 0x0200u) != 0;
         // Immediate DMA has no future trigger in this model. HBlank/VBlank
         // DMA remains armed only when the repeat bit requests it.
-        if (timing == 0u || !repeating) {
+        // Sound FIFO DMA (timing 3 on channels 1 and 2) always repeats until disabled by CPU.
+        if (timing == 0u || (!repeating && timing != 3u)) {
             io_[base + 0x0Bu] = static_cast<std::uint8_t>(
                 io_[base + 0x0Bu] & 0x7Fu);
             transfer.armed = false;
+        }
+        if ((transfer.control & 0x4000u) != 0) {
+            RequestInterrupt(static_cast<std::uint16_t>(1u << (8u + channel)));
         }
         transfer.active = false;
         transfer.next_cycle = 0;

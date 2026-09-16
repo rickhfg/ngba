@@ -23,6 +23,7 @@ add_library(ngba_core STATIC
     src/ngba/runtime.cpp
     src/ngba/file_io.cpp
     src/ngba/rtc.cpp
+    src/ngba/apu.cpp
 )
 
 target_include_directories(ngba_core
@@ -72,7 +73,7 @@ if(MINGW)
 endif()
 if (WIN32)
     add_executable(ngba WIN32 src/windows.cpp)
-    target_link_libraries(ngba PRIVATE ngba_core user32 gdi32 comdlg32 shell32 winmm)
+    target_link_libraries(ngba PRIVATE ngba_core user32 gdi32 comdlg32 shell32 winmm ole32)
     if (MINGW)
         target_link_options(ngba PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
@@ -84,10 +85,11 @@ if (MINGW)
     target_link_options(profile_bench PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
+
 if (BUILD_TESTING)
     if (WIN32)
         add_executable(ngba_windows_tests tests/windows_tests.cpp)
-        target_link_libraries(ngba_windows_tests PRIVATE ngba_core user32 gdi32 comdlg32 shell32 winmm)
+        target_link_libraries(ngba_windows_tests PRIVATE ngba_core user32 gdi32 comdlg32 shell32 winmm ole32)
         if (MINGW)
             target_link_options(ngba_windows_tests PRIVATE -static -static-libgcc -static-libstdc++)
         endif()
@@ -142,6 +144,7 @@ if (BUILD_TESTING)
     if (MINGW)
         target_link_options(ngba_ppu_tests PRIVATE -static-libgcc -static-libstdc++)
     endif()
+    add_test(NAME ngba_ppu_tests COMMAND ngba_ppu_tests)
     add_executable(ngba_rtc_tests
         tests/rtc_tests.cpp
     )
@@ -151,7 +154,16 @@ if (BUILD_TESTING)
     endif()
     add_test(NAME ngba_rtc_tests COMMAND ngba_rtc_tests)
 
-    foreach(test_target ngba_rom_tests ngba_arm7_tests ngba_ppu_tests ngba_runtime_tests ngba_bios_tests ngba_file_io_tests ngba_rtc_tests)
+    add_executable(ngba_apu_tests
+        tests/apu_tests.cpp
+    )
+    target_link_libraries(ngba_apu_tests PRIVATE ngba_core)
+    if (MINGW)
+        target_link_options(ngba_apu_tests PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ngba_apu_tests COMMAND ngba_apu_tests)
+
+    foreach(test_target ngba_rom_tests ngba_arm7_tests ngba_ppu_tests ngba_runtime_tests ngba_bios_tests ngba_file_io_tests ngba_rtc_tests ngba_apu_tests)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

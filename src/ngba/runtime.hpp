@@ -8,6 +8,8 @@
 
 namespace ngba {
 
+class AudioSink;
+
 class Runtime {
 public:
     Runtime(const std::string& rom_path, const std::string& bios_path = "", bool native = false);
@@ -18,6 +20,7 @@ public:
     Arm7Tdmi& Cpu() noexcept;
     void SetPaused(bool paused) noexcept;
     bool Paused() const noexcept;
+    void SetAudioSink(AudioSink* sink) noexcept;
     RunResult RunForCycles(Cycle cycles);
     void StepFrame();
     void Render(Framebuffer& framebuffer) const;
@@ -33,6 +36,7 @@ private:
     RomImage rom_;
     std::unique_ptr<MemoryBus> bus_;
     std::unique_ptr<Arm7Tdmi> cpu_;
+    AudioSink* audio_sink_{nullptr};
     bool native_{};
     bool paused_{};
 };

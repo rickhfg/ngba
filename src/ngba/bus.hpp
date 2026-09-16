@@ -2,6 +2,7 @@
 
 #include "ngba/rom.hpp"
 #include "ngba/rtc.hpp"
+#include "ngba/apu.hpp"
 
 #include <array>
 #include <cstdint>
@@ -134,9 +135,13 @@ public:
     const Rtc& GetRtc() const noexcept { return rtc_; }
     Rtc& GetRtc() noexcept { return rtc_; }
 
+    const Apu& GetApu() const noexcept { return apu_; }
+    Apu& GetApu() noexcept { return apu_; }
+
 private:
     friend class StateCodec;
     friend class Runtime;
+    void TriggerSoundDma(unsigned channel);
     void WriteSave(std::uint32_t offset, std::uint8_t value);
     std::uint8_t ReadMapped8(std::uint32_t address) const;
     void WriteMapped8(std::uint32_t address, std::uint8_t value);
@@ -269,6 +274,7 @@ private:
     bool interrupt_requested_{};
     Rtc rtc_{};
     bool sram_dirty_{false};
+    Apu apu_{};
 };
 
 } // namespace ngba

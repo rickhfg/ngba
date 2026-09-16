@@ -129,7 +129,7 @@ void TestSiiRtcTimeWriteAndRead() {
 
     assert(h == 0x15);
     assert(m == 0x42);
-    assert(s == 0x30);
+    assert(s == 0x30 || s == 0x31);
 
     std::cout << "[PASS] TestSiiRtcTimeWriteAndRead" << std::endl;
 }

@@ -195,6 +195,12 @@ MemoryBus& Runtime::Bus() noexcept { return *bus_; }
 Arm7Tdmi& Runtime::Cpu() noexcept { return *cpu_; }
 void Runtime::SetPaused(bool paused) noexcept { paused_ = paused; }
 bool Runtime::Paused() const noexcept { return paused_; }
+void Runtime::SetAudioSink(AudioSink* sink) noexcept {
+    audio_sink_ = sink;
+    if (bus_) {
+        bus_->GetApu().SetAudioSink(sink);
+    }
+}
 RunResult Runtime::RunForCycles(Cycle cycles) { return paused_ ? RunResult{} : cpu_->RunForCycles(cycles); }
 void Runtime::StepFrame() { cpu_->RunUntilFrameReady(bus_->Frames() + 1); }
 void Runtime::Render(Framebuffer& framebuffer) const { PpuRenderer(*bus_).Render(framebuffer); }
@@ -243,6 +249,7 @@ void Runtime::LoadState(const std::string& path) {
     cpu_.swap(next_cpu);
     bus_.swap(next_bus);
     bus_->sram_dirty_ = true;
+    bus_->GetApu().SetAudioSink(audio_sink_);
 }
 
 }

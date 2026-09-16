@@ -1,6 +1,7 @@
 #include "ngba/runtime.hpp"
 #include "ngba/file_io.hpp"
 #include "ngba/version.hpp"
+#include "ngba/audio.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -12,15 +13,131 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
 const auto kFrameTime = std::chrono::duration_cast<Clock::duration>(
     std::chrono::duration<double>(280896.0 / ngba::MemoryBus::kClockFrequency));
+
+class WaveOutAudioSink : public ngba::AudioSink {
+public:
+    static constexpr std::size_t kBufferCount = 4;
+    static constexpr std::size_t kBufferFrames = 735;
+    static constexpr std::size_t kBufferSamples = kBufferFrames * 2;
+    static constexpr std::size_t kBufferBytes = kBufferSamples * sizeof(std::int16_t);
+
+    WaveOutAudioSink() noexcept {
+        Open();
+    }
+
+    ~WaveOutAudioSink() override {
+        Close();
+    }
+
+    bool Available() const noexcept { return device_ != nullptr; }
+
+    void SetMuted(bool muted) noexcept {
+        muted_ = muted;
+        if (muted) {
+            Reset();
+        }
+    }
+
+    void Reset() noexcept {
+        if (!device_) return;
+        waveOutReset(device_);
+        for (std::size_t i = 0; i < kBufferCount; ++i) {
+            if ((headers_[i].dwFlags & WHDR_PREPARED) != 0) {
+                waveOutUnprepareHeader(device_, &headers_[i], sizeof(WAVEHDR));
+            }
+            headers_[i].dwFlags = WHDR_DONE;
+        }
+        ring_index_ = 0;
+        staging_.clear();
+    }
+
+    void SubmitSamples(const std::int16_t* stereo_samples, std::size_t frame_count) override {
+        if (!device_ || muted_ || frame_count == 0 || !stereo_samples) return;
+
+        staging_.insert(staging_.end(), stereo_samples, stereo_samples + frame_count * 2);
+
+        if (staging_.size() > kBufferSamples * (kBufferCount + 2)) {
+            staging_.erase(staging_.begin(), staging_.end() - kBufferSamples * 2);
+        }
+
+        while (staging_.size() >= kBufferSamples) {
+            WAVEHDR& hdr = headers_[ring_index_];
+            if ((hdr.dwFlags & WHDR_PREPARED) != 0) {
+                if ((hdr.dwFlags & WHDR_DONE) == 0) {
+                    break;
+                }
+                waveOutUnprepareHeader(device_, &hdr, sizeof(WAVEHDR));
+            }
+
+            std::memcpy(buffers_[ring_index_].data(), staging_.data(), kBufferBytes);
+            staging_.erase(staging_.begin(), staging_.begin() + kBufferSamples);
+
+            hdr.dwBufferLength = static_cast<DWORD>(kBufferBytes);
+            hdr.dwFlags = 0;
+            waveOutPrepareHeader(device_, &hdr, sizeof(WAVEHDR));
+            waveOutWrite(device_, &hdr, sizeof(WAVEHDR));
+
+            ring_index_ = (ring_index_ + 1) % kBufferCount;
+        }
+    }
+
+private:
+    void Open() noexcept {
+        WAVEFORMATEX wfx{};
+        wfx.wFormatTag = WAVE_FORMAT_PCM;
+        wfx.nChannels = 2;
+        wfx.nSamplesPerSec = 44100;
+        wfx.wBitsPerSample = 16;
+        wfx.nBlockAlign = 4;
+        wfx.nAvgBytesPerSec = 44100 * 4;
+
+        const MMRESULT result = waveOutOpen(&device_, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL);
+        if (result != MMSYSERR_NOERROR) {
+            device_ = nullptr;
+            return;
+        }
+
+        for (std::size_t i = 0; i < kBufferCount; ++i) {
+            buffers_[i].resize(kBufferSamples, 0);
+            headers_[i] = WAVEHDR{};
+            headers_[i].lpData = reinterpret_cast<LPSTR>(buffers_[i].data());
+            headers_[i].dwBufferLength = static_cast<DWORD>(kBufferBytes);
+            headers_[i].dwFlags = WHDR_DONE;
+        }
+    }
+
+    void Close() noexcept {
+        if (device_) {
+            waveOutReset(device_);
+            for (std::size_t i = 0; i < kBufferCount; ++i) {
+                if ((headers_[i].dwFlags & WHDR_PREPARED) != 0) {
+                    waveOutUnprepareHeader(device_, &headers_[i], sizeof(WAVEHDR));
+                }
+            }
+            waveOutClose(device_);
+            device_ = nullptr;
+        }
+    }
+
+    HWAVEOUT device_{nullptr};
+    bool muted_{false};
+    std::size_t ring_index_{0};
+    std::array<std::vector<std::int16_t>, kBufferCount> buffers_{};
+    std::array<WAVEHDR, kBufferCount> headers_{};
+    std::vector<std::int16_t> staging_{};
+};
 
 std::wstring DirectoryOf(const std::wstring& path) {
     const auto separator = path.find_last_of(L"\\/");
@@ -71,6 +188,7 @@ void ShowError(HWND window, const std::string& message) {
 
 struct Application {
     std::unique_ptr<ngba::Runtime> runtime;
+    WaveOutAudioSink audio;
     ngba::Framebuffer frame;
     std::vector<std::uint32_t> pixels;
     std::string rom_path;
@@ -106,6 +224,7 @@ struct Application {
                 message = "Slot " + std::to_string(slot) + " is empty";
                 return;
             }
+            audio.Reset();
             runtime->LoadState(path);
             runtime->Bus().SetKeys(keys);
             message = "Loaded slot " + std::to_string(slot);
@@ -115,6 +234,7 @@ struct Application {
     void SetFastForward(bool enabled) {
         if (fast_forward != enabled) {
             fast_forward = enabled;
+            audio.SetMuted(enabled);
             fast_forward_frames = 0;
             frame_deadline = {};
             render_deadline = {};
@@ -230,7 +350,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM parameter, LP
             if (message != WM_KEYDOWN || (detail & (1ll << 30)) != 0) return 0;
             if (parameter == 'P' || parameter == VK_SPACE) {
                 app->runtime->SetPaused(!app->runtime->Paused());
-                if (app->runtime->Paused()) app->runtime->FlushBatterySave();
+                if (app->runtime->Paused()) {
+                    app->runtime->FlushBatterySave();
+                    app->audio.Reset();
+                }
             } else if (parameter >= VK_F1 && parameter <= VK_F12) {
                 app->UseStateSlot(static_cast<unsigned>(parameter - VK_F1 + 1), (GetKeyState(VK_SHIFT) & 0x8000) != 0);
             } else if (parameter == VK_TAB) {
@@ -248,6 +371,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM parameter, LP
             app->runtime->Bus().SetKeys(0);
             app->resume_on_focus = !app->runtime->Paused();
             app->runtime->SetPaused(true);
+            app->audio.Reset();
             app->Refresh(window);
             return 0;
         case WM_SETFOCUS:
@@ -390,6 +514,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
             }
         }
         app.runtime.reset(new ngba::Runtime(rom, bios, app.native));
+        app.runtime->SetAudioSink(&app.audio);
         if (!load_state.empty()) app.runtime->LoadState(load_state);
         if (!bios_mode.empty()) app.runtime->Cpu().SetBiosMode(ngba::ParseBiosMode(bios_mode));
         app.rom_path = rom;

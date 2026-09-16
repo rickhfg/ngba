@@ -188,6 +188,7 @@ int main() {
     app.game_name = "Controls test";
     app.native = ngba::NativeBackend::Available();
     app.runtime.reset(new ngba::Runtime(kRomPath, "", app.native));
+    app.runtime->SetAudioSink(&app.audio);
     WNDCLASSW type{};
     type.lpfnWndProc = WindowProcedure;
     type.hInstance = GetModuleHandleW(nullptr);
