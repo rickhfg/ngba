@@ -1,5 +1,6 @@
 #include "ngba/runtime.hpp"
 #include "ngba/file_io.hpp"
+#include "ngba/version.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -170,7 +171,7 @@ struct Application {
         char fps_buffer[32];
         std::snprintf(fps_buffer, sizeof(fps_buffer), "%.1f FPS", runtime->Paused() ? 0.0 : current_fps);
 
-        std::string title = "NGBA - " + game_name + " - " +
+        std::string title = std::string("NGBA v") + ngba::kVersionString + " - " + game_name + " - " +
             (runtime->Paused() ? "Paused" : fast_forward ? "Fast-forward (3x)" : "Running");
         if (!message.empty()) title += " | " + message;
         title += std::string(native ? " - Native + fallback" : " - Interpreter") +
@@ -344,7 +345,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
                     L"Z / X: A / B\nEnter / Backspace: Start / Select\nArrows: D-pad\nA / S: L / R\n\n"
                     L"Optional command line:\nngba.exe [game.gba] [bios.bin] [--interpreter]\n"
                     L"[--bios-mode external|hle|hybrid] [--load-state FILE]",
-                    L"NGBA - Help", MB_OK | MB_ICONINFORMATION);
+                    (L"NGBA v" + ngba::Utf8ToWide(ngba::kVersionString) + L" - Help").c_str(), MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
             if (argument == "--interpreter") app.native = false;
@@ -401,7 +402,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
         if (!RegisterClassW(&type)) throw std::runtime_error("cannot register NGBA window");
         RECT rectangle{0, 0, 720, 480};
         AdjustWindowRect(&rectangle, WS_OVERLAPPEDWINDOW, FALSE);
-        HWND window = CreateWindowW(type.lpszClassName, L"NGBA", WS_OVERLAPPEDWINDOW,
+        const std::wstring initial_title = L"NGBA v" + ngba::Utf8ToWide(ngba::kVersionString);
+        HWND window = CreateWindowW(type.lpszClassName, initial_title.c_str(), WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT, rectangle.right - rectangle.left, rectangle.bottom - rectangle.top,
             nullptr, nullptr, type.hInstance, &app);
         if (!window) throw std::runtime_error("cannot create NGBA window");

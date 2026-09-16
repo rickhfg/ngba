@@ -1,10 +1,13 @@
-# ngba
+# NGBA (Native GBA)
+
+[![Release](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/rickhfg/ngba/releases)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 
 Lightweight, high-performance Game Boy Advance emulator written in modern C++ with native execution.
 
 ![Pokemon Ruby on NGBA](captures/ruby-title.png)
 
-NGBA is a lightweight, standalone Game Boy Advance emulator built from scratch in C++14. It is engineered for performance, precision, and simplicity—featuring an ARM7TDMI core with native machine-code translation fallback, cycle-stepped hardware events, an optimized 2D PPU pipeline, and a responsive Win32 GUI with sub-millisecond frame pacing.
+**NGBA (Native GBA)** is a lightweight, standalone Game Boy Advance emulator built from scratch in C++14. It is engineered for performance, precision, and simplicity—featuring an ARM7TDMI core with native machine-code translation fallback, cycle-stepped hardware events, an optimized 2D PPU pipeline, Seiko S-3511A Real-Time Clock (RTC) emulation, automatic battery save (`.sav`) persistence, and a responsive Win32 GUI with sub-millisecond frame pacing.
 
 ---
 
@@ -27,14 +30,16 @@ NGBA is a lightweight, standalone Game Boy Advance emulator built from scratch i
   - Immediate, HBlank, and VBlank DMA transfers with destination reload modes.
   - Keypad controller (`KEYINPUT`/`KEYCNT`) with interrupt generation.
   - Cartridge backup support for FLASH512 and FLASH1M commands, chip/sector erase, and bank switching.
+  - **Real-Time Clock (RTC)**: Full Seiko Instruments S-3511A RTC emulation over Game Pak GPIO pins (`0x080000C4`–`0x080000C8`). Automatically enabled for titles with `SIIRTC_V` / `SIIRTC` signatures (e.g. Pokémon Ruby/Sapphire/Emerald, Boktai series) so the internal clock advances with host local time and the dry battery warning is eliminated.
+  - **Automatic Battery Saves (`.sav`)**: Seamless persistence of 64KB/128KB Flash & SRAM to `<ROM>.sav` on disk. Fully compatible with real hardware and other emulators (mGBA, VBA), featuring debounced background flushes during active gameplay, pause, savestate operations, and clean application exit.
 
 - **Modern Win32 Frontend**:
   - Single standalone portable executable (`ngba.exe`) with no required external runtime DLLs.
   - Hardware timer-paced main loop (`timeBeginPeriod(1)`) guaranteeing a steady 59.73 Hz guest refresh rate.
   - Real-time framerate and guest frame counter displayed in the title bar.
   - **3x Fast-Forward Pacing**: Hold `Tab` for smooth, uncapped, or locked ~179.1 FPS fast-forward.
-  - **12 Save Slots**: Dedicated slots 1–12 with instant save (`Shift+F1`–`F12`) and load (`F1`–`F12`), protected by state hashing and version validation.
-  - Unicode path support for ROMs, BIOS files, and save states.
+  - **12 Save Slots**: Dedicated slots 1–12 with instant save (`Shift+F1`–`F12`) and load (`F1`–`F12`), protected by state hashing and version 3 validation (backwards-compatible with version 2).
+  - Unicode path support for ROMs, BIOS files, battery saves (`.sav`), and save states (`.ngbs`).
 
 ---
 

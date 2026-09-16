@@ -1,4 +1,5 @@
 #include "ngba/rom.hpp"
+#include "ngba/version.hpp"
 
 #include <iomanip>
 #include <iostream>
@@ -27,7 +28,7 @@ int main(int argc, char** argv) {
         const ngba::RomImage rom = ngba::RomImage::Load(argv[1]);
         const ngba::RomHeader& header = rom.Header();
 
-        std::cout << "NGBA ROM probe\n"
+        std::cout << "NGBA v" << ngba::kVersionString << " ROM probe\n"
                   << "  path: " << rom.Path() << '\n'
                   << "  size: " << rom.Size() << " bytes\n"
                   << "  title: " << header.title << '\n'
