@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ngba/rom.hpp"
+#include "ngba/rtc.hpp"
 
 #include <array>
 #include <cstdint>
@@ -124,6 +125,14 @@ public:
     const std::vector<std::uint8_t>& Palette() const noexcept { return palette_; }
     const std::vector<std::uint8_t>& Oam() const noexcept { return oam_; }
     const std::vector<std::uint8_t>& Io() const noexcept { return io_; }
+
+    bool SaveMemoryDirty() const noexcept { return sram_dirty_; }
+    void ClearSaveMemoryDirty() noexcept { sram_dirty_ = false; }
+    const std::vector<std::uint8_t>& SaveMemory() const noexcept { return sram_; }
+    void LoadSaveMemory(const std::vector<std::uint8_t>& data);
+
+    const Rtc& GetRtc() const noexcept { return rtc_; }
+    Rtc& GetRtc() noexcept { return rtc_; }
 
 private:
     friend class StateCodec;
@@ -258,6 +267,8 @@ private:
     unsigned ws_non_seq_[3]{4, 4, 4};
     bool interrupt_pending_{};
     bool interrupt_requested_{};
+    Rtc rtc_{};
+    bool sram_dirty_{false};
 };
 
 } // namespace ngba

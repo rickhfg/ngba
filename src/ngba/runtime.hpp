@@ -23,8 +23,13 @@ public:
     void Render(Framebuffer& framebuffer) const;
     void SaveState(const std::string& path) const;
     void LoadState(const std::string& path);
+    void FlushBatterySave();
+    const std::string& SavePath() const noexcept { return save_path_; }
+    ~Runtime();
 
 private:
+    std::string rom_path_;
+    std::string save_path_;
     RomImage rom_;
     std::unique_ptr<MemoryBus> bus_;
     std::unique_ptr<Arm7Tdmi> cpu_;

@@ -67,11 +67,19 @@ void WriteFile(const std::string& path, const std::vector<std::uint8_t>& bytes) 
     WriteBinaryFile(temporary, bytes);
 #ifdef _WIN32
     if (!MoveFileExW(Utf8ToWide(temporary).c_str(), Utf8ToWide(path).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        throw std::runtime_error("cannot replace savestate: " + path);
+        throw std::runtime_error("cannot replace file: " + path);
     }
 #else
-    if (std::rename(temporary.c_str(), path.c_str()) != 0) throw std::runtime_error("cannot replace savestate: " + path);
+    if (std::rename(temporary.c_str(), path.c_str()) != 0) throw std::runtime_error("cannot replace file: " + path);
 #endif
+}
+
+std::string GetBatterySavePath(const std::string& rom_path) {
+    const auto dot = rom_path.find_last_of('.');
+    if (dot != std::string::npos) {
+        return rom_path.substr(0, dot) + ".sav";
+    }
+    return rom_path + ".sav";
 }
 
 }
@@ -94,7 +102,7 @@ public:
         cpu.SetBiosMode(static_cast<BiosMode>(mode));
     }
 
-    static void Bus(Archive& archive, MemoryBus& bus) {
+    static void Bus(Archive& archive, MemoryBus& bus, std::uint32_t version) {
         archive.Fields(bus.ewram_, bus.iwram_, bus.io_, bus.palette_, bus.vram_, bus.oam_, bus.sram_,
                        bus.flash_id_, bus.flash_sequence_, bus.flash_bank_, bus.flash_command_,
                        bus.cycles_, bus.frames_, bus.dma_transfers_, bus.dma_cycles_, bus.scanline_cycles_,
@@ -116,6 +124,13 @@ public:
                        bus.cpu_last_access_width_, bus.cpu_last_access_region_, bus.cpu_data_reads_,
                        bus.cpu_access_penalty_, bus.cpu_instruction_address_, bus.prefetch_valid_,
                        bus.prefetch_buffer_address_, bus.prefetch_next_address_, bus.prefetch_count_, bus.prefetch_region_);
+        if (version >= 3) {
+            std::uint8_t rtc_status = bus.rtc_.Status();
+            std::uint64_t rtc_offset = static_cast<std::uint64_t>(bus.rtc_.TimeOffset());
+            archive.Fields(rtc_status, rtc_offset);
+            bus.rtc_.SetStatus(rtc_status);
+            bus.rtc_.SetTimeOffset(static_cast<std::int64_t>(rtc_offset));
+        }
     }
 
     static std::uint64_t BiosHash(const MemoryBus& bus) { return Hash(bus.bios_); }
@@ -147,9 +162,33 @@ public:
 };
 
 Runtime::Runtime(const std::string& rom_path, const std::string& bios_path, bool native)
-    : rom_(RomImage::Load(rom_path)), bus_(new MemoryBus(rom_, bios_path)), cpu_(new Arm7Tdmi(*bus_)), native_(native) {
+    : rom_path_(rom_path),
+      save_path_(GetBatterySavePath(rom_path)),
+      rom_(RomImage::Load(rom_path)),
+      bus_(new MemoryBus(rom_, bios_path)),
+      cpu_(new Arm7Tdmi(*bus_)),
+      native_(native) {
     cpu_->Reset(rom_.ResetVectorAddress());
     cpu_->EnableNative(native);
+    try {
+        const auto save_data = ReadBinaryFile(save_path_, 128u * 1024u);
+        bus_->LoadSaveMemory(save_data);
+    } catch (...) {
+        // Battery save does not exist or cannot be opened; start fresh
+    }
+}
+
+Runtime::~Runtime() {
+    try {
+        FlushBatterySave();
+    } catch (...) {
+    }
+}
+
+void Runtime::FlushBatterySave() {
+    if (!bus_ || !bus_->SaveMemoryDirty()) return;
+    WriteFile(save_path_, bus_->SaveMemory());
+    bus_->ClearSaveMemoryDirty();
 }
 
 MemoryBus& Runtime::Bus() noexcept { return *bus_; }
@@ -165,12 +204,12 @@ void Runtime::SaveState(const std::string& path) const {
     const_cast<MemoryBus*>(bus_.get())->UpdateDisplayStatus();
     std::vector<std::uint8_t> payload;
     Archive archive(payload, false);
-    StateCodec::Bus(archive, *bus_);
+    std::uint32_t version = 3;
+    StateCodec::Bus(archive, *bus_, version);
     StateCodec::Cpu(archive, *cpu_);
     std::vector<std::uint8_t> bytes;
     Archive header(bytes, false);
     std::uint64_t magic = 0x3154534142474Eull;
-    std::uint32_t version = 2;
     std::uint64_t rom_hash = Hash(rom_.Bytes());
     std::uint64_t bios_hash = StateCodec::BiosHash(*bus_);
     std::uint64_t checksum = Hash(payload);
@@ -186,14 +225,14 @@ void Runtime::LoadState(const std::string& path) {
     std::uint64_t magic = 0, rom_hash = 0, bios_hash = 0, checksum = 0;
     std::uint32_t version = 0;
     header.Fields(magic, version, rom_hash, bios_hash, checksum);
-    if (magic != 0x3154534142474Eull || version != 2 || rom_hash != Hash(rom_.Bytes()) ||
+    if (magic != 0x3154534142474Eull || (version != 2 && version != 3) || rom_hash != Hash(rom_.Bytes()) ||
         bios_hash != StateCodec::BiosHash(*bus_)) throw std::runtime_error("savestate version, ROM or BIOS mismatch");
     std::vector<std::uint8_t> payload(bytes.begin() + 36, bytes.end());
     if (Hash(payload) != checksum) throw std::runtime_error("savestate checksum mismatch");
     std::unique_ptr<MemoryBus> next_bus(new MemoryBus(*bus_));
     std::unique_ptr<Arm7Tdmi> next_cpu(new Arm7Tdmi(*next_bus));
     Archive archive(payload, true);
-    StateCodec::Bus(archive, *next_bus);
+    StateCodec::Bus(archive, *next_bus, version);
     StateCodec::Cpu(archive, *next_cpu);
     archive.Finish();
     StateCodec::Validate(*next_bus, *next_cpu);
@@ -203,6 +242,7 @@ void Runtime::LoadState(const std::string& path) {
     next_cpu->EnableNative(native_);
     cpu_.swap(next_cpu);
     bus_.swap(next_bus);
+    bus_->sram_dirty_ = true;
 }
 
 }
