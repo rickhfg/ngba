@@ -85,6 +85,7 @@ struct Application {
     Clock::time_point fps_start_time{};
     ngba::Cycle fps_start_frame{};
     double current_fps{59.7};
+    Clock::time_point last_save_flush{};
 
     std::string StatePath(unsigned slot) const {
         if (slot < 1 || slot > 12) throw std::invalid_argument("invalid savestate slot");
@@ -92,6 +93,7 @@ struct Application {
     }
 
     void UseStateSlot(unsigned slot, bool saving) {
+        runtime->FlushBatterySave();
         const auto path = StatePath(slot);
         if (saving) {
             runtime->SaveState(path);
@@ -119,6 +121,14 @@ struct Application {
     }
 
     bool Advance(HWND window, Clock::time_point now) {
+        if (runtime->Bus().SaveMemoryDirty()) {
+            if (last_save_flush == Clock::time_point{}) {
+                last_save_flush = now;
+            } else if (now - last_save_flush >= std::chrono::milliseconds(500)) {
+                runtime->FlushBatterySave();
+                last_save_flush = {};
+            }
+        }
         if (runtime->Paused()) return false;
         const auto interval = fast_forward ? (kFrameTime / 3) : kFrameTime;
         if (frame_deadline != Clock::time_point{} && now < frame_deadline) return false;
@@ -219,6 +229,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM parameter, LP
             if (message != WM_KEYDOWN || (detail & (1ll << 30)) != 0) return 0;
             if (parameter == 'P' || parameter == VK_SPACE) {
                 app->runtime->SetPaused(!app->runtime->Paused());
+                if (app->runtime->Paused()) app->runtime->FlushBatterySave();
             } else if (parameter >= VK_F1 && parameter <= VK_F12) {
                 app->UseStateSlot(static_cast<unsigned>(parameter - VK_F1 + 1), (GetKeyState(VK_SHIFT) & 0x8000) != 0);
             } else if (parameter == VK_TAB) {
@@ -292,6 +303,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM parameter, LP
             return 0;
         }
         case WM_DESTROY:
+            app->runtime->FlushBatterySave();
             PostQuitMessage(0);
             return 0;
         }

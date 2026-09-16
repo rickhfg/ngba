@@ -85,6 +85,9 @@ MemoryBus::MemoryBus(const RomImage& rom, const std::string& bios_path)
     flash_ = flash_1m || has_signature("FLASH512_V") || has_signature("FLASH_V");
     if (flash_1m) sram_.resize(128 * 1024, 0xFF);
 
+    const bool has_rtc = has_signature("SIIRTC_V") || has_signature("SIIRTC");
+    rtc_.SetEnabled(has_rtc);
+
     iwram_write_records_.reserve(kIwramDiagnosticLimit);
     watched_iwram_write_records_.reserve(kIwramDiagnosticLimit);
     watched_memory_write_records_.reserve(kIwramDiagnosticLimit);
@@ -124,6 +127,13 @@ MemoryBus::MemoryBus(const RomImage& rom, const std::string& bios_path)
     RecalculateNextEvent();
 }
 
+void MemoryBus::LoadSaveMemory(const std::vector<std::uint8_t>& data) {
+    if (data.empty()) return;
+    const std::size_t to_copy = std::min(sram_.size(), data.size());
+    std::copy(data.begin(), data.begin() + to_copy, sram_.begin());
+    sram_dirty_ = false;
+}
+
 std::uint8_t MemoryBus::Read8(std::uint32_t address) const {
     return ReadMapped8(address);
 }
@@ -131,6 +141,9 @@ std::uint8_t MemoryBus::Read8(std::uint32_t address) const {
 std::uint16_t MemoryBus::Read16(std::uint32_t address) const {
     const unsigned region = address >> 24;
     if (region >= 0x08 && region <= 0x0D && address < kSramBase) {
+        if (rtc_.Enabled() && (rtc_.ReadControl() & 1u) != 0 && address >= 0x080000C4u && address <= 0x080000C9u) {
+            return LoadLe16(Read8(address), Read8(address + 1));
+        }
         const std::size_t rom_offset = static_cast<std::size_t>(address - kRomBase) % rom_.Size();
         if (rom_offset + 1 < rom_.Size()) {
             std::uint16_t val;
@@ -205,6 +218,13 @@ void MemoryBus::Write8(std::uint32_t address, std::uint8_t value) {
 
 void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
     const unsigned region = address >> 24;
+    if (region >= 0x08 && region <= 0x0D) {
+        if (rtc_.Enabled()) {
+            if (address == 0x080000C4u) { rtc_.WriteData(value); return; }
+            if (address == 0x080000C6u) { rtc_.WriteDirection(value); return; }
+            if (address == 0x080000C8u) { rtc_.WriteControl(value); return; }
+        }
+    }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
         const std::size_t offset = static_cast<std::size_t>(address - kIwramBase) % iwram_.size();
         if (offset + 1 < iwram_.size()) {
@@ -814,6 +834,18 @@ std::uint8_t MemoryBus::ReadMapped8(std::uint32_t address) const {
     case 0x0C:
     case 0x0D: {
         if (address >= kRomBase && address < kSramBase) {
+            if (rtc_.Enabled() && (rtc_.ReadControl() & 1u) != 0 &&
+                address >= 0x080000C4u && address <= 0x080000C9u) {
+                switch (address) {
+                case 0x080000C4u: return static_cast<std::uint8_t>(rtc_.ReadData());
+                case 0x080000C5u: return static_cast<std::uint8_t>(rtc_.ReadData() >> 8);
+                case 0x080000C6u: return static_cast<std::uint8_t>(rtc_.ReadDirection());
+                case 0x080000C7u: return static_cast<std::uint8_t>(rtc_.ReadDirection() >> 8);
+                case 0x080000C8u: return static_cast<std::uint8_t>(rtc_.ReadControl());
+                case 0x080000C9u: return static_cast<std::uint8_t>(rtc_.ReadControl() >> 8);
+                default: break;
+                }
+            }
             const std::size_t rom_offset =
                 static_cast<std::size_t>(address - kRomBase) % rom_.Size();
             return rom_.Bytes()[rom_offset];
@@ -944,6 +976,27 @@ void MemoryBus::WriteMapped8(std::uint32_t address, std::uint8_t value) {
         if (offset < oam_.size()) oam_[offset] = value;
         return;
     }
+    case 0x08:
+    case 0x09:
+    case 0x0A:
+    case 0x0B:
+    case 0x0C:
+    case 0x0D: {
+        if (rtc_.Enabled()) {
+            switch (address) {
+            case 0x080000C4u: rtc_.WriteData(value); return;
+            case 0x080000C6u: rtc_.WriteDirection(value); return;
+            case 0x080000C8u: rtc_.WriteControl(value); return;
+            case 0x080000C5u:
+            case 0x080000C7u:
+            case 0x080000C9u:
+                return;
+            default:
+                break;
+            }
+        }
+        return;
+    }
     case 0x0E: {
         if (address >= kSramBase && address < 0x10000000u) {
             WriteSave(address & 0xFFFFu, value);
@@ -959,10 +1012,12 @@ void MemoryBus::WriteSave(std::uint32_t offset, std::uint8_t value) {
     const std::size_t target = offset + static_cast<std::size_t>(flash_bank_) * 65536u;
     if (!flash_) {
         sram_[offset] = value;
+        sram_dirty_ = true;
         return;
     }
     if (flash_command_ == 0xA0u) {
         sram_[target] &= value;
+        sram_dirty_ = true;
         flash_command_ = 0;
         return;
     }
@@ -990,8 +1045,10 @@ void MemoryBus::WriteSave(std::uint32_t offset, std::uint8_t value) {
         if (value == 0x30u) {
             const std::size_t begin = target & ~std::size_t(0xFFFu);
             std::fill(sram_.begin() + begin, sram_.begin() + begin + 4096u, 0xFF);
+            sram_dirty_ = true;
         } else if (offset == 0x5555u && value == 0x10u) {
             std::fill(sram_.begin(), sram_.end(), 0xFF);
+            sram_dirty_ = true;
         }
         flash_command_ = 0;
         return;
