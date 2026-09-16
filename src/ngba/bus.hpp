@@ -2,6 +2,7 @@
 
 #include "ngba/rom.hpp"
 #include "ngba/rtc.hpp"
+#include "ngba/eeprom.hpp"
 
 #include <array>
 #include <cstdint>
@@ -126,13 +127,24 @@ public:
     const std::vector<std::uint8_t>& Oam() const noexcept { return oam_; }
     const std::vector<std::uint8_t>& Io() const noexcept { return io_; }
 
-    bool SaveMemoryDirty() const noexcept { return sram_dirty_; }
-    void ClearSaveMemoryDirty() noexcept { sram_dirty_ = false; }
-    const std::vector<std::uint8_t>& SaveMemory() const noexcept { return sram_; }
+    bool SaveMemoryDirty() const noexcept {
+        return eeprom_.Enabled() ? eeprom_.Dirty() : sram_dirty_;
+    }
+    void ClearSaveMemoryDirty() noexcept {
+        if (eeprom_.Enabled()) eeprom_.ClearDirty();
+        sram_dirty_ = false;
+    }
+    const std::vector<std::uint8_t>& SaveMemory() const noexcept {
+        return eeprom_.Enabled() ? eeprom_.Data() : sram_;
+    }
     void LoadSaveMemory(const std::vector<std::uint8_t>& data);
 
     const Rtc& GetRtc() const noexcept { return rtc_; }
     Rtc& GetRtc() noexcept { return rtc_; }
+
+    const Eeprom& GetEeprom() const noexcept { return eeprom_; }
+    Eeprom& GetEeprom() noexcept { return eeprom_; }
+    bool IsEepromAddress(std::uint32_t address) const noexcept;
 
 private:
     friend class StateCodec;
@@ -269,6 +281,7 @@ private:
     bool interrupt_requested_{};
     Rtc rtc_{};
     bool sram_dirty_{false};
+    Eeprom eeprom_{};
 };
 
 } // namespace ngba

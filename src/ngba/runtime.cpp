@@ -49,6 +49,14 @@ public:
 
     void Field(std::vector<std::uint8_t>& bytes) { for (auto& value : bytes) Field(value); }
 
+    bool Reading() const noexcept { return reading_; }
+    void DynamicVector(std::vector<std::uint8_t>& bytes) {
+        std::uint64_t size = bytes.size();
+        Field(size);
+        if (reading_) bytes.resize(static_cast<std::size_t>(size));
+        Field(bytes);
+    }
+
     template <typename... Values>
     void Fields(Values&... values) { int result[] = {0, (Field(values), 0)...}; (void)result; }
 
@@ -131,6 +139,20 @@ public:
             bus.rtc_.SetStatus(rtc_status);
             bus.rtc_.SetTimeOffset(static_cast<std::int64_t>(rtc_offset));
         }
+        if (version >= 4) {
+            std::uint8_t eeprom_size = bus.eeprom_.SerializedSize();
+            bool eeprom_dirty = bus.eeprom_.Dirty();
+            bool eeprom_reading = bus.eeprom_.Reading();
+            std::uint64_t read_bit_index = static_cast<std::uint64_t>(bus.eeprom_.ReadBitIndex());
+            std::uint32_t read_address = bus.eeprom_.ReadAddress();
+            archive.Fields(eeprom_size, eeprom_dirty, eeprom_reading, read_bit_index, read_address);
+            std::vector<std::uint8_t> eeprom_data = bus.eeprom_.Data();
+            archive.DynamicVector(eeprom_data);
+            std::vector<std::uint8_t> input_bits = bus.eeprom_.InputBits();
+            archive.DynamicVector(input_bits);
+            bus.eeprom_.RestoreState(eeprom_size, eeprom_data, eeprom_dirty, eeprom_reading,
+                                     static_cast<std::size_t>(read_bit_index), read_address, input_bits);
+        }
     }
 
     static std::uint64_t BiosHash(const MemoryBus& bus) { return Hash(bus.bios_); }
@@ -204,7 +226,7 @@ void Runtime::SaveState(const std::string& path) const {
     const_cast<MemoryBus*>(bus_.get())->UpdateDisplayStatus();
     std::vector<std::uint8_t> payload;
     Archive archive(payload, false);
-    std::uint32_t version = 3;
+    std::uint32_t version = 4;
     StateCodec::Bus(archive, *bus_, version);
     StateCodec::Cpu(archive, *cpu_);
     std::vector<std::uint8_t> bytes;
@@ -225,7 +247,7 @@ void Runtime::LoadState(const std::string& path) {
     std::uint64_t magic = 0, rom_hash = 0, bios_hash = 0, checksum = 0;
     std::uint32_t version = 0;
     header.Fields(magic, version, rom_hash, bios_hash, checksum);
-    if (magic != 0x3154534142474Eull || (version != 2 && version != 3) || rom_hash != Hash(rom_.Bytes()) ||
+    if (magic != 0x3154534142474Eull || (version != 2 && version != 3 && version != 4) || rom_hash != Hash(rom_.Bytes()) ||
         bios_hash != StateCodec::BiosHash(*bus_)) throw std::runtime_error("savestate version, ROM or BIOS mismatch");
     std::vector<std::uint8_t> payload(bytes.begin() + 36, bytes.end());
     if (Hash(payload) != checksum) throw std::runtime_error("savestate checksum mismatch");

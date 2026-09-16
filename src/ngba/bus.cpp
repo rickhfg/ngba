@@ -82,8 +82,29 @@ MemoryBus::MemoryBus(const RomImage& rom, const std::string& bios_path)
                            signature.begin(), signature.end()) != rom_.Bytes().end();
     };
     const bool flash_1m = has_signature("FLASH1M_V");
-    flash_ = flash_1m || has_signature("FLASH512_V") || has_signature("FLASH_V");
-    if (flash_1m) sram_.resize(128 * 1024, 0xFF);
+    const bool flash_512 = has_signature("FLASH512_V") || has_signature("FLASH_V");
+    const bool has_eeprom_sig = has_signature("EEPROM_V") || has_signature("EEPROM_");
+
+    const std::string& code = rom_.Header().game_code;
+    const bool known_64k_eeprom = (code == "U3IJ" || code == "U3IE" || code == "U3IP" ||
+                                   code == "U32J" || code == "U32E" || code == "U32P" ||
+                                   code == "AC8J" || code == "AC8E" || code == "AC8P" ||
+                                   code == "ALGP" || code == "ALFJ" || code == "ALFE" ||
+                                   code == "ALFP" || code == "BDKJ" ||
+                                   code == "BZME" || code == "BZMP" || code == "BZMJ");
+
+    if (has_eeprom_sig || known_64k_eeprom) {
+        eeprom_.SetEnabled(true);
+        if (known_64k_eeprom) {
+            eeprom_.SetSize(EepromSize::Eeprom64K);
+        } else {
+            eeprom_.SetSize(EepromSize::Autodetect);
+        }
+        flash_ = false;
+    } else {
+        flash_ = flash_1m || flash_512;
+        if (flash_1m) sram_.resize(128 * 1024, 0xFF);
+    }
 
     const bool has_rtc = has_signature("SIIRTC_V") || has_signature("SIIRTC");
     rtc_.SetEnabled(has_rtc);
@@ -127,8 +148,22 @@ MemoryBus::MemoryBus(const RomImage& rom, const std::string& bios_path)
     RecalculateNextEvent();
 }
 
+bool MemoryBus::IsEepromAddress(std::uint32_t address) const noexcept {
+    if (!eeprom_.Enabled()) return false;
+    if (rom_.Size() > 16 * 1024 * 1024) {
+        return (address >= 0x0DFFFF00u && address <= 0x0DFFFFFFu) ||
+               (address >= 0x09FFFF00u && address <= 0x09FFFFFFu);
+    }
+    return (address >= 0x0D000000u && address < 0x0E000000u) ||
+           (address >= 0x09FE0000u && address < 0x0A000000u);
+}
+
 void MemoryBus::LoadSaveMemory(const std::vector<std::uint8_t>& data) {
     if (data.empty()) return;
+    if (eeprom_.Enabled()) {
+        eeprom_.LoadSaveData(data);
+        return;
+    }
     const std::size_t to_copy = std::min(sram_.size(), data.size());
     std::copy(data.begin(), data.begin() + to_copy, sram_.begin());
     sram_dirty_ = false;
@@ -140,6 +175,12 @@ std::uint8_t MemoryBus::Read8(std::uint32_t address) const {
 
 std::uint16_t MemoryBus::Read16(std::uint32_t address) const {
     const unsigned region = address >> 24;
+    if (eeprom_.Enabled() && IsEepromAddress(address)) {
+        return const_cast<MemoryBus*>(this)->eeprom_.Read();
+    }
+    if (region == 0x0E && eeprom_.Enabled()) {
+        return 0xFFFFu;
+    }
     if (region >= 0x08 && region <= 0x0D && address < kSramBase) {
         if (rtc_.Enabled() && (rtc_.ReadControl() & 1u) != 0 && address >= 0x080000C4u && address <= 0x080000C9u) {
             return LoadLe16(Read8(address), Read8(address + 1));
@@ -177,6 +218,12 @@ std::uint16_t MemoryBus::Read16(std::uint32_t address) const {
 
 std::uint32_t MemoryBus::Read32(std::uint32_t address) const {
     const unsigned region = address >> 24;
+    if (eeprom_.Enabled() && IsEepromAddress(address)) {
+        return const_cast<MemoryBus*>(this)->eeprom_.Read();
+    }
+    if (region == 0x0E && eeprom_.Enabled()) {
+        return 0xFFFFFFFFu;
+    }
     if (region >= 0x08 && region <= 0x0D && address < kSramBase) {
         const std::size_t rom_offset = static_cast<std::size_t>(address - kRomBase) % rom_.Size();
         if (rom_offset + 3 < rom_.Size()) {
@@ -219,11 +266,18 @@ void MemoryBus::Write8(std::uint32_t address, std::uint8_t value) {
 void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
     const unsigned region = address >> 24;
     if (region >= 0x08 && region <= 0x0D) {
+        if (eeprom_.Enabled() && IsEepromAddress(address)) {
+            eeprom_.Write(value & 1u);
+            return;
+        }
         if (rtc_.Enabled()) {
             if (address == 0x080000C4u) { rtc_.WriteData(value); return; }
             if (address == 0x080000C6u) { rtc_.WriteDirection(value); return; }
             if (address == 0x080000C8u) { rtc_.WriteControl(value); return; }
         }
+    }
+    if (region == 0x0E && eeprom_.Enabled()) {
+        return;
     }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
         const std::size_t offset = static_cast<std::size_t>(address - kIwramBase) % iwram_.size();
@@ -250,6 +304,15 @@ void MemoryBus::Write16(std::uint32_t address, std::uint16_t value) {
 
 void MemoryBus::Write32(std::uint32_t address, std::uint32_t value) {
     const unsigned region = address >> 24;
+    if (region >= 0x08 && region <= 0x0D) {
+        if (eeprom_.Enabled() && IsEepromAddress(address)) {
+            eeprom_.Write(value & 1u);
+            return;
+        }
+    }
+    if (region == 0x0E && eeprom_.Enabled()) {
+        return;
+    }
     if (region == 0x03 && address >= kIwramBase && address < kIoBase) {
         const std::size_t offset = static_cast<std::size_t>(address - kIwramBase) % iwram_.size();
         if (offset + 3 < iwram_.size()) {
@@ -833,6 +896,9 @@ std::uint8_t MemoryBus::ReadMapped8(std::uint32_t address) const {
     case 0x0B:
     case 0x0C:
     case 0x0D: {
+        if (eeprom_.Enabled() && IsEepromAddress(address)) {
+            return static_cast<std::uint8_t>(const_cast<MemoryBus*>(this)->eeprom_.Read());
+        }
         if (address >= kRomBase && address < kSramBase) {
             if (rtc_.Enabled() && (rtc_.ReadControl() & 1u) != 0 &&
                 address >= 0x080000C4u && address <= 0x080000C9u) {
@@ -853,6 +919,9 @@ std::uint8_t MemoryBus::ReadMapped8(std::uint32_t address) const {
         return 0;
     }
     case 0x0E: {
+        if (eeprom_.Enabled()) {
+            return 0xFFu;
+        }
         if (address >= kSramBase && address < 0x10000000u) {
             const std::size_t offset = address & 0xFFFFu;
             if (flash_ && flash_id_ && offset < 2u) {
@@ -982,6 +1051,10 @@ void MemoryBus::WriteMapped8(std::uint32_t address, std::uint8_t value) {
     case 0x0B:
     case 0x0C:
     case 0x0D: {
+        if (eeprom_.Enabled() && IsEepromAddress(address)) {
+            eeprom_.Write(value & 1u);
+            return;
+        }
         if (rtc_.Enabled()) {
             switch (address) {
             case 0x080000C4u: rtc_.WriteData(value); return;
@@ -998,6 +1071,9 @@ void MemoryBus::WriteMapped8(std::uint32_t address, std::uint8_t value) {
         return;
     }
     case 0x0E: {
+        if (eeprom_.Enabled()) {
+            return; // SRAM is unmapped when EEPROM is present
+        }
         if (address >= kSramBase && address < 0x10000000u) {
             WriteSave(address & 0xFFFFu, value);
         }
@@ -1336,6 +1412,12 @@ void MemoryBus::StartDma(unsigned channel) {
     std::uint32_t count = static_cast<std::uint32_t>(
         LoadLe16(io_[base + 0x08u], io_[base + 0x09u]));
     if (count == 0) count = channel == 3 ? 0x10000u : 0x4000u;
+
+    if (channel == 3 && eeprom_.Enabled()) {
+        if (IsEepromAddress(destination)) {
+            eeprom_.NotifyDmaTransfer(count);
+        }
+    }
 
     const bool word = (control & 0x0400u) != 0;
     const unsigned destination_control = (control >> 5) & 0x03u;
