@@ -666,7 +666,7 @@ void Apu::RestoreFromIo(const std::array<std::uint8_t, 1024>& io, bool sound_dma
 
     if (soundbias_ == 0) soundbias_ = 0x0200;
 
-    // Backward compatibility auto-recovery for savestates saved with missing audio state:
+    // Backward compatibility: make sure older savestates pre-apu dont load muted
     if ((soundcnt_x_ & 0x80u) == 0 && sound_dma_active) {
         soundcnt_x_ = 0x80;
         soundcnt_h_ = 0x3302;
